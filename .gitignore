@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+fishing_bot_settings.json
+license.dat
+dist/
+build/
+*.spec
