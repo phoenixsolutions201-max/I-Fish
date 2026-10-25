@@ -552,6 +552,15 @@ class DonationDialog(tk.Toplevel):
         self.geometry("380x210")
         self.resizable(False, False)
         self.transient(parent)
+
+        # grab_set() before the window is actually mapped can lose the
+        # race with the parent window finishing its own layout, which
+        # pushes this behind it right after it draws -- looks exactly
+        # like "flashes then disappears" even though it's still open.
+        # Force it to the front and wait for it to be real before grabbing.
+        self.lift()
+        self.focus_force()
+        self.wait_visibility()
         self.grab_set()
 
         tk.Label(
