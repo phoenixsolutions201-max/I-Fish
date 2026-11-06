@@ -228,9 +228,12 @@ class FishingBot:
         if not key:
             self._log("Hearth skipped: no Hearthstone key is configured.")
             return False
+        # Stop the fishing loop before starting the Hearthstone cast so
+        # subsequent fishing inputs do not interrupt the channel.
+        self._stop_event.set()
         try:
             pydirectinput.press(key)
-            self._log(f"Safety hearth: pressed '{key}'.")
+            self._log(f"Safety hearth: pressed '{key}' and stopped fishing.")
             return True
         except Exception as e:
             self._log(f"Safety hearth failed: {e}")
