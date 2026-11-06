@@ -79,6 +79,7 @@ class BotConfig:
     buff_apply_wait_seconds: float = 0.5  # wait, then verify the pole-buff icon after applying
     fishing_pole_name: str = ""  # equipped fishing pole, used only to build the suggested macro text
     lure_item_name: str = ""     # lure/buff item name, used only to build the suggested macro text
+    hearth_key: str = "1"        # key bound to Hearthstone in WoW
 
 
 LogFn = Callable[[str], None]
@@ -195,6 +196,8 @@ class FishingBot:
         self.casts = 0
         self.catches = 0
         self.buffs_applied = 0
+        self._hearth_lock = threading.Lock()
+        self._hearth_sent = False
 
     # ---------- public control ----------
 
@@ -213,6 +216,25 @@ class FishingBot:
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    def hearth(self) -> bool:
+        """Press the configured Hearthstone key once for the current bot run."""
+        with self._hearth_lock:
+            if self._hearth_sent:
+                return False
+            self._hearth_sent = True
+
+        key = (self.config.hearth_key or "").strip()
+        if not key:
+            self._log("Hearth skipped: no Hearthstone key is configured.")
+            return False
+        try:
+            pydirectinput.press(key)
+            self._log(f"Safety hearth: pressed '{key}'.")
+            return True
+        except Exception as e:
+            self._log(f"Safety hearth failed: {e}")
+            return False
 
     # ---------- internals ----------
 
