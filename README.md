@@ -111,8 +111,9 @@ The **Auto-Stop Timer** lives on the main window rather than behind a tab,
 since it's something you'll likely set every session: check "Stop the bot
 automatically after a set time", drag the Minutes slider, and it stops
 itself (with a live countdown) once that time is up. When 1 minute remains,
-I-Fish presses the configured Hearthstone key once (default `1`) so the
-character can return to safety before shutdown. Set that key in
+I-Fish stops fishing and presses the configured Hearthstone key once
+(default `1`) so the Hearthstone channel is not interrupted and the character
+can return to safety before shutdown. Set that key in
 **Advanced Settings → Keybindings**. Check "Also close WoW when the timer
 ends" if you also want the game client closed at the end.
 
