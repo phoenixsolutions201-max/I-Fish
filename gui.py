@@ -897,6 +897,7 @@ class AdvancedSettingsDialog(_ThemedDialog):
 
         key_row("Fishing key:", app.fish_key_var)
         key_row("Lure key:", app.buff_key_var)
+        key_row("Hearthstone key:", app.hearth_key_var)
 
         stop_row = ttk.Frame(parent)
         stop_row.pack(fill="x", padx=12, pady=5)
@@ -1460,6 +1461,12 @@ class FishingBotApp(tk.Tk):
         return self._buff_key_var
 
     @property
+    def hearth_key_var(self):
+        if not hasattr(self, "_hearth_key_var"):
+            self._hearth_key_var = tk.StringVar(value="1")
+        return self._hearth_key_var
+
+    @property
     def stop_hotkey_var(self):
         if not hasattr(self, "_stop_hotkey_var"):
             self._stop_hotkey_var = tk.StringVar(value="f8")
@@ -1628,6 +1635,7 @@ class FishingBotApp(tk.Tk):
             hue_tolerance=int(self.hue_tolerance_var.get()),
             fishing_pole_name=self.fishing_pole_var.get().strip(),
             lure_item_name=self.lure_item_var.get().strip(),
+            hearth_key=self.hearth_key_var.get().strip() or "1",
         )
 
     def _toggle_bot(self):
@@ -1686,6 +1694,7 @@ class FishingBotApp(tk.Tk):
             return
         minutes = max(1, int(self.timer_minutes_var.get()))
         self._timer_end_time = time.time() + minutes * 60
+        self._hearth_sent_for_timer = False
         self._tick_auto_stop_timer()
 
     def _tick_auto_stop_timer(self):
@@ -1697,6 +1706,10 @@ class FishingBotApp(tk.Tk):
             self._timer_after_id = None
             self._on_timer_expired()
             return
+        if remaining <= 60 and not getattr(self, "_hearth_sent_for_timer", False):
+            self._hearth_sent_for_timer = True
+            if self.bot and self.bot.is_running():
+                self.bot.hearth()
         mins, secs = divmod(int(remaining), 60)
         self.timer_status_var.set(f"Auto-stop in {mins:02d}:{secs:02d}")
         self._timer_after_id = self.after(1000, self._tick_auto_stop_timer)
@@ -1757,6 +1770,7 @@ class FishingBotApp(tk.Tk):
         return {
             "fish_key": self.fish_key_var.get(),
             "buff_key": self.buff_key_var.get(),
+            "hearth_key": self.hearth_key_var.get(),
             "stop_hotkey": self.stop_hotkey_var.get(),
             "picked_color": list(self.picked_color) if self.picked_color else None,
             "search_region": list(self.search_region) if self.search_region else None,
@@ -1806,6 +1820,7 @@ class FishingBotApp(tk.Tk):
 
         self.fish_key_var.set(data.get("fish_key", self.fish_key_var.get()))
         self.buff_key_var.set(data.get("buff_key", self.buff_key_var.get()))
+        self.hearth_key_var.set(data.get("hearth_key", self.hearth_key_var.get()))
         self.stop_hotkey_var.set(data.get("stop_hotkey", self.stop_hotkey_var.get()))
 
         picked = data.get("picked_color")
