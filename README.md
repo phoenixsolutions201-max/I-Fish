@@ -39,7 +39,7 @@
 - ✅ **Draggable/resizable Fishing Zone overlay** — limit scanning to just your water for speed and fewer false positives
 - ✅ **Auto-buffing with WoW macro generation** — detects whether your lure buff is active, re-applies it automatically, and generates a ready-to-paste `[equipped:...]` macro so the lure only ever lands on your actual fishing pole
 - ✅ **Global Start/Stop hotkey** (default `F8`)
-- ✅ **Auto-Stop Timer** — stop after N minutes, with an option to also force-close WoW (handy for unattended/overnight sessions)
+- ✅ **Auto-Stop Timer with safety hearth** — press the configured Hearthstone key (default `1`) once when 1 minute remains, then stop at the timer end; optionally force-close WoW
 - ✅ **Human-like randomized timing** toggle, plus tunable warm-up delay, bite timeout, bounce→click delay, and recast delay
 - ✅ **Cast/Catch stats panel** and built-in status log
 - ✅ **Settings saved automatically** — keybindings, colors, regions, and every slider persist between launches
@@ -102,7 +102,7 @@ four tabs at the bottom. Each tab opens its controls in its own popup window:
 
 | Tab | What's in it |
 |---|---|
-| **Keybindings** | Fishing Key, Buff Key, and the global Stop/Start hotkey (default `F8`) |
+| **Keybindings** | Fishing Key, Buff Key, Hearthstone Key (default `1`), and the global Stop/Start hotkey (default `F8`) |
 | **Fishing Zone** | the draggable/resizable screen-region overlay, or reset to full screen |
 | **Bobber Detection** | pick the bobber color, tune tolerance/sensitivity, enable hue-tolerant matching, test the match live |
 | **Advanced Settings** | *General* (warm-up delay, bite timeout, hover offset, bounce→click delay, recast delay, randomized timing), *Buff Check* (lure auto-buffing + macro generator), *About* (the ToS disclaimer) |
@@ -110,8 +110,11 @@ four tabs at the bottom. Each tab opens its controls in its own popup window:
 The **Auto-Stop Timer** lives on the main window rather than behind a tab,
 since it's something you'll likely set every session: check "Stop the bot
 automatically after a set time", drag the Minutes slider, and it stops
-itself (with a live countdown) once that time is up. Check "Also close WoW
-when the timer ends" for unattended overnight sessions.
+itself (with a live countdown) once that time is up. When 1 minute remains,
+I-Fish presses the configured Hearthstone key once (default `1`) so the
+character can return to safety before shutdown. Set that key in
+**Advanced Settings → Keybindings**. Check "Also close WoW when the timer
+ends" if you also want the game client closed at the end.
 
 ## 🎯 Using the Bot
 
