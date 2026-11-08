@@ -1213,8 +1213,14 @@ class FishingBotApp(tk.Tk):
         self.close_wow_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             timer_card, text="Also close WoW when the timer ends",
-            variable=self.close_wow_var,
-        ).pack(anchor="w", padx=8, pady=(2, 4))
+            variable=self.close_wow_var, command=self._save_settings,
+        ).pack(anchor="w", padx=8, pady=(2, 0))
+
+        self.hearth_before_close_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            timer_card, text="Hearth before closing WoW (stop fishing 1 min early; press key at 30 sec)",
+            variable=self.hearth_before_close_var, command=self._save_settings,
+        ).pack(anchor="w", padx=8, pady=(0, 4))
 
         self.timer_status_var = tk.StringVar(value="Timer not running")
         tk.Label(timer_card, textvariable=self.timer_status_var, fg=THEME_TEXT_DIM,
@@ -1695,6 +1701,7 @@ class FishingBotApp(tk.Tk):
         minutes = max(1, int(self.timer_minutes_var.get()))
         self._timer_end_time = time.time() + minutes * 60
         self._hearth_sent_for_timer = False
+        self._fishing_stopped_for_hearth = False
         self._tick_auto_stop_timer()
 
     def _tick_auto_stop_timer(self):
@@ -1706,9 +1713,22 @@ class FishingBotApp(tk.Tk):
             self._timer_after_id = None
             self._on_timer_expired()
             return
-        if remaining <= 60 and not getattr(self, "_hearth_sent_for_timer", False):
-            self._hearth_sent_for_timer = True
+        # When hearth-before-close is enabled, stop all fishing inputs with
+        # 60 seconds left so the character cannot interrupt the Hearthstone.
+        hearth_enabled = self.close_wow_var.get() and self.hearth_before_close_var.get()
+        if hearth_enabled and remaining <= 60 and not self._fishing_stopped_for_hearth:
+            self._fishing_stopped_for_hearth = True
             if self.bot and self.bot.is_running():
+                self.bot.stop()
+            self.toggle_btn.set_appearance(text="START", base_color=THEME_BLUE)
+            self.timer_status_var.set("Fishing stopped — hearth in 30 seconds...")
+
+        # Press the configured Hearthstone key exactly once, 30 seconds
+        # before WoW is closed. The bot's hearth() method handles the key
+        # binding and prevents duplicate presses.
+        if hearth_enabled and remaining <= 30 and not self._hearth_sent_for_timer:
+            self._hearth_sent_for_timer = True
+            if self.bot:
                 self.bot.hearth()
         mins, secs = divmod(int(remaining), 60)
         self.timer_status_var.set(f"Auto-stop in {mins:02d}:{secs:02d}")
@@ -1796,6 +1816,7 @@ class FishingBotApp(tk.Tk):
             "timer_enabled": bool(self.timer_enabled_var.get()),
             "timer_minutes": int(self.timer_minutes_var.get()),
             "close_wow": bool(self.close_wow_var.get()),
+            "hearth_before_close": bool(self.hearth_before_close_var.get()),
         }
 
     def _save_settings(self):
@@ -1870,6 +1891,8 @@ class FishingBotApp(tk.Tk):
             self.timer_minutes_var.set(data["timer_minutes"])
         if "close_wow" in data:
             self.close_wow_var.set(data["close_wow"])
+        if "hearth_before_close" in data:
+            self.hearth_before_close_var.set(data["hearth_before_close"])
 
     def _on_close(self):
         self._save_settings()
