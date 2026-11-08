@@ -39,7 +39,7 @@
 - ✅ **Draggable/resizable Fishing Zone overlay** — limit scanning to just your water for speed and fewer false positives
 - ✅ **Auto-buffing with WoW macro generation** — detects whether your lure buff is active, re-applies it automatically, and generates a ready-to-paste `[equipped:...]` macro so the lure only ever lands on your actual fishing pole
 - ✅ **Global Start/Stop hotkey** (default `F8`)
-- ✅ **Auto-Stop Timer with safety hearth** — press the configured Hearthstone key (default `1`) once when 1 minute remains, then stop at the timer end; optionally force-close WoW
+- ✅ **Auto-Stop Timer with optional safety hearth** — when enabled alongside auto-close WoW, stop fishing with 1 minute remaining, press the configured Hearthstone key (default `1`) once with 30 seconds remaining, then close WoW at the timer end
 - ✅ **Human-like randomized timing** toggle, plus tunable warm-up delay, bite timeout, bounce→click delay, and recast delay
 - ✅ **Cast/Catch stats panel** and built-in status log
 - ✅ **Settings saved automatically** — keybindings, colors, regions, and every slider persist between launches
@@ -110,12 +110,12 @@ four tabs at the bottom. Each tab opens its controls in its own popup window:
 The **Auto-Stop Timer** lives on the main window rather than behind a tab,
 since it's something you'll likely set every session: check "Stop the bot
 automatically after a set time", drag the Minutes slider, and it stops
-itself (with a live countdown) once that time is up. When 1 minute remains,
-I-Fish stops fishing and presses the configured Hearthstone key once
-(default `1`) so the Hearthstone channel is not interrupted and the character
-can return to safety before shutdown. Set that key in
-**Advanced Settings → Keybindings**. Check "Also close WoW when the timer
-ends" if you also want the game client closed at the end.
+itself (with a live countdown) once that time is up. If you also check **"Hearth before closing WoW"**, I-Fish stops fishing
+when 1 minute remains, then presses the configured Hearthstone key once
+(default `1`) when 30 seconds remain. This gives the Hearthstone channel
+time to complete before WoW closes at the timer end. Set the key in
+**Advanced Settings → Keybindings**. Leave the hearth checkbox unchecked
+to simply stop the bot at the timer end without attempting to hearth.
 
 ## 🎯 Using the Bot
 
