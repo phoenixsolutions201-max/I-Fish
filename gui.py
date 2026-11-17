@@ -33,7 +33,7 @@ import time
 import tkinter as tk
 import webbrowser
 from collections import Counter
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from theme import *
 
 import pyautogui
@@ -1470,6 +1470,34 @@ class AdvancedSettingsDialog(_ThemedDialog):
             foreground=THEME_TEXT_DIM, wraplength=380, justify="left",
         ).pack(anchor="w", padx=10, pady=(0, 8))
 
+        # ---- Chat log catch confirmation (works with retail/classic/private e.g. WoW Forever) ----
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", padx=10, pady=(8, 6))
+        ttk.Checkbutton(
+            parent,
+            text="Confirm catches from WoW chat log (recommended)",
+            variable=app.chat_log_enabled_var,
+        ).pack(anchor="w", padx=12, pady=(2, 2))
+        log_row = ttk.Frame(parent)
+        log_row.pack(fill="x", padx=12, pady=2)
+        ttk.Label(log_row, text="Chat log:", width=12).pack(side="left")
+        ttk.Entry(log_row, textvariable=app.chat_log_path_var).pack(
+            side="left", fill="x", expand=True, padx=(0, 4)
+        )
+        ttk.Button(log_row, text="Browse…", width=9, command=app.browse_chat_log).pack(side="left")
+        ttk.Button(log_row, text="Auto-find", width=9, command=app.auto_find_chat_log).pack(
+            side="left", padx=(4, 0)
+        )
+        ttk.Label(
+            parent,
+            text=(
+                "1) In game type  /chatlog   once\n"
+                "2) Click Auto-find (or Browse) so this points at WoWChatLog.txt\n"
+                "Works with WoW Forever and normal clients. Catches count only on "
+                "real loot lines, not when the fish got away."
+            ),
+            foreground=THEME_TEXT_DIM, wraplength=380, justify="left",
+        ).pack(anchor="w", padx=12, pady=(2, 8))
+
         ttk.Checkbutton(
             parent, text="Human-like randomized timing (delays + occasional space tap)",
             variable=app.human_like_var,
@@ -1965,6 +1993,134 @@ class FishingBotApp(tk.Tk):
         self.buff_status_var.set("Pole buff captured. Test it while the green timer is visible.")
         self._save_settings()
 
+    def browse_chat_log(self):
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Select WoWChatLog.txt",
+            filetypes=[
+                ("Chat log", "WoWChatLog.txt"),
+                ("Text files", "*.txt"),
+                ("All files", "*.*"),
+            ],
+        )
+        if path:
+            self.chat_log_path_var.set(path)
+            self.chat_log_enabled_var.set(True)
+            self._save_settings()
+            messagebox.showinfo(APP_TITLE, f"Chat log set:\n{path}")
+
+    def auto_find_chat_log(self):
+        """Search common install folders (including WoW Forever) for WoWChatLog.txt."""
+        found = self._discover_wow_chat_logs()
+        if not found:
+            messagebox.showinfo(
+                APP_TITLE,
+                "No WoWChatLog.txt found yet.\n\n"
+                "1. In game type:  /chatlog\n"
+                "2. Cast or chat once so the file is created\n"
+                "3. Click Auto-find again\n\n"
+                "Or use Browse and pick the file under your game folder\\Logs\\",
+            )
+            return
+
+        # Prefer the newest log (most recently written = active client).
+        found.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        best = found[0]
+        self.chat_log_path_var.set(best)
+        self.chat_log_enabled_var.set(True)
+        self._save_settings()
+
+        extra = ""
+        if len(found) > 1:
+            extra = f"\n\n({len(found)} logs found; using the most recently updated.)"
+        messagebox.showinfo(APP_TITLE, f"Found and selected:\n{best}{extra}")
+
+    def _discover_wow_chat_logs(self) -> list:
+        """Return paths to WoWChatLog.txt under common game install roots."""
+        roots: list[str] = []
+        for key in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA", "USERPROFILE"):
+            val = os.environ.get(key)
+            if val:
+                roots.append(val)
+        # Common user folders
+        home = os.path.expanduser("~")
+        roots.extend([
+            home,
+            os.path.join(home, "Desktop"),
+            os.path.join(home, "Downloads"),
+            os.path.join(home, "Games"),
+            "C:\\",
+            "D:\\",
+            "E:\\",
+        ])
+
+        name_hints = (
+            "wow forever",
+            "wowforever",
+            "world of warcraft",
+            "warcraft",
+            "wow",
+            "turtle wow",
+            "project epoch",
+        )
+        results: list[str] = []
+        seen = set()
+
+        def consider(path: str):
+            path = os.path.normpath(path)
+            if path in seen:
+                return
+            if os.path.isfile(path) and path.lower().endswith("wowchatlog.txt"):
+                seen.add(path)
+                results.append(path)
+
+        # Direct well-known relative patterns under each root (fast)
+        rel_patterns = [
+            os.path.join("World of Warcraft", "Logs", "WoWChatLog.txt"),
+            os.path.join("World of Warcraft", "_classic_", "Logs", "WoWChatLog.txt"),
+            os.path.join("World of Warcraft", "_classic_era_", "Logs", "WoWChatLog.txt"),
+            os.path.join("World of Warcraft", "_retail_", "Logs", "WoWChatLog.txt"),
+            os.path.join("WoW Forever", "Logs", "WoWChatLog.txt"),
+            os.path.join("WoWForever", "Logs", "WoWChatLog.txt"),
+            os.path.join("Games", "WoW Forever", "Logs", "WoWChatLog.txt"),
+            os.path.join("Games", "World of Warcraft", "Logs", "WoWChatLog.txt"),
+        ]
+        for root in roots:
+            if not root or not os.path.isdir(root):
+                continue
+            for rel in rel_patterns:
+                consider(os.path.join(root, rel))
+
+        # Shallow walk: only enter folders whose names look like WoW installs
+        max_depth = 4
+        for root in roots:
+            if not root or not os.path.isdir(root):
+                continue
+            try:
+                base_depth = root.rstrip("\\/").count(os.sep)
+                for dirpath, dirnames, filenames in os.walk(root):
+                    depth = dirpath.rstrip("\\/").count(os.sep) - base_depth
+                    if depth > max_depth:
+                        dirnames[:] = []
+                        continue
+                    lower_parts = dirpath.lower()
+                    # Prune unrelated trees early
+                    if depth >= 1 and not any(h in lower_parts for h in name_hints):
+                        # Still allow scanning immediate children of drive roots
+                        if depth >= 2:
+                            dirnames[:] = [
+                                d for d in dirnames
+                                if any(h in d.lower() for h in name_hints) or d.lower() in ("logs", "games")
+                            ]
+                    if "wowchatlog.txt" in (f.lower() for f in filenames):
+                        for f in filenames:
+                            if f.lower() == "wowchatlog.txt":
+                                consider(os.path.join(dirpath, f))
+            except Exception:
+                continue
+
+        return results
+
     def test_buff_check(self):
         if self.buff_color is None:
             messagebox.showerror(APP_TITLE, "Pick the buff icon first.")
@@ -2010,6 +2166,18 @@ class FishingBotApp(tk.Tk):
         if not hasattr(self, "_hearth_key_var"):
             self._hearth_key_var = tk.StringVar(value="1")
         return self._hearth_key_var
+
+    @property
+    def chat_log_enabled_var(self):
+        if not hasattr(self, "_chat_log_enabled_var"):
+            self._chat_log_enabled_var = tk.BooleanVar(value=False)
+        return self._chat_log_enabled_var
+
+    @property
+    def chat_log_path_var(self):
+        if not hasattr(self, "_chat_log_path_var"):
+            self._chat_log_path_var = tk.StringVar(value="")
+        return self._chat_log_path_var
 
     @property
     def stop_hotkey_var(self):
@@ -2186,6 +2354,8 @@ class FishingBotApp(tk.Tk):
             fishing_pole_name=self.fishing_pole_var.get().strip(),
             lure_item_name=self.lure_item_var.get().strip(),
             hearth_key=self.hearth_key_var.get().strip() or "1",
+            chat_log_enabled=bool(self.chat_log_enabled_var.get()),
+            chat_log_path=self.chat_log_path_var.get().strip(),
         )
 
     def _toggle_bot(self):
@@ -2363,6 +2533,8 @@ class FishingBotApp(tk.Tk):
             "timer_minutes": int(self.timer_minutes_var.get()),
             "close_wow": bool(self.close_wow_var.get()),
             "hearth_before_close": bool(self.hearth_before_close_var.get()),
+            "chat_log_enabled": bool(self.chat_log_enabled_var.get()),
+            "chat_log_path": self.chat_log_path_var.get(),
         }
 
     def _save_settings(self):
@@ -2389,6 +2561,9 @@ class FishingBotApp(tk.Tk):
         self.buff_key_var.set(data.get("buff_key", self.buff_key_var.get()))
         self.hearth_key_var.set(data.get("hearth_key", self.hearth_key_var.get()))
         self.stop_hotkey_var.set(data.get("stop_hotkey", self.stop_hotkey_var.get()))
+        self.chat_log_enabled_var.set(bool(data.get("chat_log_enabled", False)))
+        if data.get("chat_log_path"):
+            self.chat_log_path_var.set(data.get("chat_log_path"))
 
         picked = data.get("picked_color")
         if picked:

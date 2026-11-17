@@ -32,6 +32,7 @@ Improvements over the original:
   - scan_for_color can return the raw mask for visual feedback in the GUI
 """
 
+import os
 import random
 import threading
 import time
@@ -93,6 +94,11 @@ class BotConfig:
     fishing_pole_name: str = ""  # equipped fishing pole, used only to build the suggested macro text
     lure_item_name: str = ""     # lure/buff item name, used only to build the suggested macro text
     hearth_key: str = "1"        # key bound to Hearthstone in WoW
+
+    # Accurate catch counting via WoW chat log (enable with /chatlog in-game).
+    # When enabled, only count if the log shows loot — not "got away".
+    chat_log_enabled: bool = False
+    chat_log_path: str = ""  # e.g. ...\World of Warcraft\_classic_\Logs\WoWChatLog.txt
 
     def effective_colors(self) -> List[Color]:
         """Return the list of colors to match against (primary + extras)."""
@@ -333,6 +339,48 @@ class FishingBot:
         except Exception:
             return None
 
+    # Title fragments that identify a focused WoW client window.
+    _WOW_TITLE_MARKERS = (
+        "world of warcraft",
+        "wow classic",
+        "wow ",
+    )
+
+    def _is_wow_foreground(self) -> bool:
+        """True when a WoW game window is the active (foreground) window."""
+        try:
+            hwnd = win32gui.GetForegroundWindow()
+            if not hwnd:
+                return False
+            title = (win32gui.GetWindowText(hwnd) or "").strip().lower()
+            if not title:
+                return False
+            # Exact-ish matches: normal client titles contain these phrases.
+            for marker in self._WOW_TITLE_MARKERS:
+                if marker in title:
+                    return True
+            # Fallback: some builds just title the window "WoW"
+            if title == "wow":
+                return True
+            return False
+        except Exception:
+            # If we cannot read focus, keep running (fail open).
+            return True
+
+    def _wait_while_paused_for_focus(self) -> bool:
+        """Block while WoW is not focused. Returns False if stop was requested
+        while paused; True if the game is focused and we should continue."""
+        if self._is_wow_foreground():
+            return True
+
+        self._log("Paused — click back into the WoW window to resume.")
+        while not self._stop_event.is_set():
+            if self._is_wow_foreground():
+                self._log("WoW focused again — resuming.")
+                return True
+            time.sleep(0.25)
+        return False
+
     def _reset_cursor_to_edge(self):
         pyautogui.moveTo(self.config.edge_reset_x, self.config.edge_reset_y)
 
@@ -443,6 +491,105 @@ class FishingBot:
         self.casts += 1
         self._log(f"Cast #{self.casts}: pressed '{self.config.fishing_button}'.")
 
+    def _chat_log_size(self) -> Optional[int]:
+        path = (self.config.chat_log_path or "").strip()
+        if not path:
+            return None
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return None
+
+    def _read_chat_log_since(self, offset: int) -> str:
+        """Read new bytes from the chat log (UTF-8 / UTF-16 / cp1252)."""
+        path = (self.config.chat_log_path or "").strip()
+        if not path:
+            return ""
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                end = f.tell()
+                start = min(max(0, offset), end)
+                f.seek(start)
+                raw = f.read()
+        except OSError:
+            return ""
+        if not raw:
+            return ""
+        for enc in ("utf-8", "utf-16-le", "utf-16", "cp1252"):
+            try:
+                return raw.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return raw.decode("utf-8", errors="ignore")
+
+    def _classify_chat_loot(self, text: str) -> Optional[str]:
+        """Return 'loot', 'away', or None from new chat-log text."""
+        if not text:
+            return None
+        cleaned = text
+        # Strip |cAARRGGBB color codes used in some logs
+        lower_tmp = cleaned
+        out = []
+        i = 0
+        while i < len(lower_tmp):
+            if lower_tmp[i:i+2].lower() == "|c" and i + 10 <= len(lower_tmp):
+                i += 10
+                continue
+            if lower_tmp[i:i+2].lower() == "|r":
+                i += 2
+                continue
+            out.append(lower_tmp[i])
+            i += 1
+        lower = "".join(out).lower()
+
+        away_markers = (
+            "got away",
+            "fish got away",
+            "your catch got away",
+            "that fish got away",
+        )
+        loot_markers = (
+            "you receive loot",
+            "you receive item",
+            "you received item",
+            "you received loot",
+            "received item:",
+            "received loot:",
+            "you loot",
+            "you create:",
+            "looted:",
+        )
+        for m in away_markers:
+            if m in lower:
+                return "away"
+        for m in loot_markers:
+            if m in lower:
+                return "loot"
+        return None
+
+    def _wait_for_chat_loot_result(self, pre_size: Optional[int], timeout: float = 1.6) -> Optional[str]:
+        """Poll the chat log for loot vs got-away. Returns 'loot', 'away', or None."""
+        if not self.config.chat_log_enabled:
+            return None
+        if pre_size is None:
+            self._log("Chat log not readable — check path / Auto-find.")
+            return None
+        deadline = time.time() + timeout
+        last_chunk = ""
+        while time.time() < deadline and not self._stop_event.is_set():
+            chunk = self._read_chat_log_since(pre_size)
+            if chunk:
+                last_chunk = chunk
+            result = self._classify_chat_loot(chunk)
+            if result is not None:
+                return result
+            time.sleep(0.1)
+        if last_chunk:
+            tail = " ".join(last_chunk.strip().split())[-120:]
+            self._log(f"Chat log had no loot/away line. Recent: …{tail}")
+        return None
+
     def _wait_for_bite_and_loot(self) -> bool:
         """Locate the bobber, then continuously track it while watching
         for a bite via cursor-change, a downward dip, or the color
@@ -470,26 +617,112 @@ class FishingBot:
         last_known_x, last_known_y = bobber_x, bobber_y
         y_history: List[int] = [bobber_y]
         lost_streak = 0
+        cursor_change_streak = 0
 
-        def _do_catch(reason: str):
+        def _bobber_still_present() -> bool:
+            """True if the bobber is still findable (local, wide local, or full scan)."""
+            if self._track_bobber_near(last_known_x, last_known_y) is not None:
+                return True
+            if self._track_bobber_near(
+                last_known_x, last_known_y,
+                margin=self.config.tracking_margin_px * 3,
+            ) is not None:
+                return True
+            # Full search as last resort — avoids "gone" when tracking just glitched.
+            if self._locate_bobber() is not None:
+                return True
+            return False
+
+        def _try_loot_click(reason: str) -> Optional[int]:
+            """Right-click to loot. Returns chat-log file size before the click
+            when chat-log confirmation is enabled."""
+            pre_size = None
+            if self.config.chat_log_enabled:
+                pre_size = self._chat_log_size()
             if self.config.bite_click_delay > 0:
                 time.sleep(self.config.bite_click_delay)
             pydirectinput.click(x=hover_x, y=hover_y, button="right")
+            self._log(f"Bite signal ({reason}) — right-clicked to loot.")
+            return pre_size
+
+        def _confirm_loot_for_count(reason: str, pre_log_size: Optional[int] = None) -> bool:
+            """Count a catch only when loot is real.
+
+            Fast path: if bobber is still on the water, this was a false click —
+            return immediately (no long chat-log wait). That was causing the
+            multi-second gaps between casts.
+
+            Chat-log mode: only consulted when the bobber is gone.
+            """
+            # Quick reject: false dip/splash — do not burn time on the log.
+            time.sleep(0.35)
+            if _bobber_still_present():
+                self._log(f"No loot ({reason}) — bobber still there, not counting.")
+                return False
+
+            # Bobber is gone. Confirm via chat log when enabled.
+            if self.config.chat_log_enabled and (self.config.chat_log_path or "").strip():
+                result = self._wait_for_chat_loot_result(pre_log_size, timeout=1.6)
+                if result == "loot":
+                    self.catches += 1
+                    self._log(
+                        f"Catch confirmed by chat log ({reason}). "
+                        f"Total catches: {self.catches}."
+                    )
+                    return True
+                if result == "away":
+                    self._log(f"Fish got away ({reason}) — not counting.")
+                    return False
+                # Bobber gone but no log line: count as catch (private servers
+                # sometimes skip the loot chat line with auto-loot).
+                self.catches += 1
+                self._log(
+                    f"Catch counted ({reason}, bobber gone, no log line). "
+                    f"Total catches: {self.catches}."
+                )
+                return True
+
+            # Fallback without chat log: second check, then count.
+            time.sleep(0.35)
+            if _bobber_still_present():
+                self._log(f"No loot ({reason}) — bobber reappeared, not counting.")
+                return False
             self.catches += 1
-            self._log(f"Bite detected ({reason}) — looted. Total catches: {self.catches}.")
+            self._log(f"Catch looted ({reason}). Total catches: {self.catches}.")
+            return True
 
         while time.time() < deadline:
             if self._stop_event.is_set():
                 return False
 
-            # Signal A: Windows cursor icon change.
+            # Pause mid-cast if the user tabs away; resume when WoW is focused.
+            if not self._is_wow_foreground():
+                if not self._wait_while_paused_for_focus():
+                    return False
+                idle_cursor = self._get_cursor_handle()
+                cursor_change_streak = 0
+                deadline = time.time() + self.config.bite_timeout_seconds
+                continue
+
+            # Signal A: loot cursor (2 stable polls). Some clients barely change
+            # the cursor — dip/splash still handle those cases below.
             current_cursor = self._get_cursor_handle()
-            if current_cursor is not None and current_cursor != idle_cursor:
-                _do_catch("cursor change")
+            if (
+                current_cursor is not None
+                and idle_cursor is not None
+                and current_cursor != idle_cursor
+            ):
+                cursor_change_streak += 1
+            else:
+                cursor_change_streak = 0
+
+            if cursor_change_streak >= 2:
+                pre = _try_loot_click("loot cursor")
+                counted = _confirm_loot_for_count("loot cursor", pre)
                 self._sleep_random()
                 self._reset_cursor_to_edge()
                 self._sleep_random()
-                return True
+                return counted
 
             tracked = self._track_bobber_near(last_known_x, last_known_y)
 
@@ -497,18 +730,25 @@ class FishingBot:
                 tx, ty, _ = tracked
                 lost_streak = 0
 
-                # Signal B: downward dip relative to a short rolling baseline.
-                if len(y_history) >= 3:
-                    baseline = sorted(y_history[-3:])[1]  # median of last 3
-                    if ty - baseline >= self.config.bite_dip_threshold_px:
-                        _do_catch("dip")
-                        self._sleep_random()
-                        self._reset_cursor_to_edge()
-                        self._sleep_random()
-                        return True
+                # Signal B: dip — count only if bobber stays gone after click.
+                if len(y_history) >= 5:
+                    baseline = sorted(y_history[-5:])[1]
+                    if ty - baseline >= max(self.config.bite_dip_threshold_px, 8):
+                        pre = _try_loot_click("dip")
+                        counted = _confirm_loot_for_count("dip", pre)
+                        if counted:
+                            self._sleep_random()
+                            self._reset_cursor_to_edge()
+                            self._sleep_random()
+                            return True
+                        lost_streak = 0
+                        y_history = [ty]
+                        cursor_change_streak = 0
+                        idle_cursor = self._get_cursor_handle()
+                        continue
 
                 y_history.append(ty)
-                if len(y_history) > 6:
+                if len(y_history) > 10:
                     y_history.pop(0)
 
                 last_known_x, last_known_y = tx, ty
@@ -519,14 +759,19 @@ class FishingBot:
             else:
                 lost_streak += 1
 
-                # Signal C: color briefly vanished after being solidly
-                # tracked — likely a splash covering it.
-                if len(y_history) >= 3 and lost_streak == 2:
-                    _do_catch("splash (color lost)")
-                    self._sleep_random()
-                    self._reset_cursor_to_edge()
-                    self._sleep_random()
-                    return True
+                # Signal C: splash — same rule as dip.
+                if len(y_history) >= 5 and lost_streak == 4:
+                    pre = _try_loot_click("splash")
+                    counted = _confirm_loot_for_count("splash", pre)
+                    if counted:
+                        self._sleep_random()
+                        self._reset_cursor_to_edge()
+                        self._sleep_random()
+                        return True
+                    lost_streak = 0
+                    cursor_change_streak = 0
+                    idle_cursor = self._get_cursor_handle()
+                    continue
 
                 # Adaptive recovery:
                 # 1) After a few misses try a wider local search (2× margin)
@@ -568,17 +813,52 @@ class FishingBot:
     def _run(self):
         self._log(f"Warming up for {self.config.active_after_seconds:.1f}s...")
         time.sleep(self.config.active_after_seconds)
+        self._log("Focus guard on: bot pauses when WoW is not the active window.")
+        if self.config.chat_log_enabled:
+            path = (self.config.chat_log_path or "").strip()
+            size = self._chat_log_size()
+            if path and size is not None:
+                self._log(f"Chat-log catch confirm ON — reading {path} ({size} bytes).")
+            else:
+                self._log(
+                    "Chat-log catch confirm is ON but the log file was not found. "
+                    "Use Advanced Settings → Auto-find after typing /chatlog in game."
+                )
+        else:
+            self._log("Chat-log catch confirm OFF — counting uses bobber-gone heuristic.")
 
         while not self._stop_event.is_set():
+            if not self._wait_while_paused_for_focus():
+                break
+
             self._ensure_buff()
             if self._stop_event.is_set():
                 break
+
+            if not self._wait_while_paused_for_focus():
+                break
+
             self._cast_line()
             self._sleep_random()
+
+            if not self._wait_while_paused_for_focus():
+                break
+
             caught = self._wait_for_bite_and_loot()
             if not caught and self.config.recast_delay_seconds > 0 and not self._stop_event.is_set():
                 self._log(f"Waiting {self.config.recast_delay_seconds:.1f}s before recasting...")
-                time.sleep(self.config.recast_delay_seconds)
+                # Still honor focus during the recast wait so we don't cast
+                # into the wrong window when the user tabs away mid-wait.
+                end = time.time() + self.config.recast_delay_seconds
+                while time.time() < end and not self._stop_event.is_set():
+                    if not self._is_wow_foreground():
+                        if not self._wait_while_paused_for_focus():
+                            break
+                        break  # restart recast timing after resume
+                    time.sleep(0.1)
+
+            if self._stop_event.is_set():
+                break
             self._maybe_press_space()
             self._sleep_random()
 
