@@ -38,7 +38,7 @@ from theme import *
 
 import pyautogui
 
-from fishing_bot_core import BotConfig, FishingBot, build_lure_macro, scan_for_color
+from fishing_bot_core import BotConfig, FishingBot, build_lure_macro, scan_for_color, match_icon_template
 
 # A starter list of well-known WoW fishing poles across expansions (Classic
 # through retail) for the "Fishing Pole" dropdown. Not exhaustive — the
@@ -1526,30 +1526,34 @@ class AdvancedSettingsDialog(_ThemedDialog):
 
         row = ttk.Frame(parent)
         row.pack(fill="x", padx=10, pady=(0, 6))
-        ttk.Button(row, text="Capture Pole Buff...", command=app.start_buff_pick).pack(side="left")
-        ttk.Button(row, text="Test Buff Check", command=app.test_buff_check).pack(side="left", padx=(6, 0))
+        ttk.Button(row, text="Capture Pole Buff Icon...", command=app.start_buff_pick).pack(side="left")
+        ttk.Button(row, text="Test Icon Match", command=app.test_buff_check).pack(side="left", padx=(6, 0))
 
-        swatch = tk.Canvas(row, width=24, height=18, bg="#888888",
+        # Preview of the full captured icon (not a single pixel)
+        swatch = tk.Canvas(row, width=32, height=32, bg="#333333",
                             highlightthickness=1, highlightbackground=THEME_CHROME)
         swatch.pack(side="left", padx=(10, 6))
         app.buff_swatch = swatch
-        if app.buff_color:
-            r, g, b = app.buff_color
-            swatch.config(bg=f"#{r:02x}{g:02x}{b:02x}")
+        app._paint_icon_preview(swatch, app.buff_icon_template, app.buff_color)
         ttk.Label(row, textvariable=app.buff_color_label_var).pack(side="left")
 
         ttk.Label(parent, textvariable=app.buff_status_var, foreground=THEME_STATUS_OK).pack(
             anchor="w", padx=10, pady=(0, 6)
         )
+        ttk.Label(
+            parent,
+            text="Captures a full 32×32 icon image and matches that on screen (not one pixel).",
+            foreground=THEME_TEXT_DIM, wraplength=390, justify="left",
+        ).pack(anchor="w", padx=10, pady=(0, 6))
 
         tune_row = ttk.Frame(parent)
         tune_row.pack(fill="x", padx=10, pady=(0, 6))
-        ttk.Label(tune_row, text="Tolerance:").pack(side="left")
-        ttk.Spinbox(tune_row, from_=1, to=150, textvariable=app.buff_tolerance_var, width=6).pack(
+        ttk.Label(tune_row, text="Lure duration (min):").pack(side="left")
+        ttk.Spinbox(tune_row, from_=1, to=60, textvariable=app.buff_duration_var, width=6).pack(
             side="left", padx=(4, 16)
         )
-        ttk.Label(tune_row, text="Min pixels:").pack(side="left")
-        ttk.Spinbox(tune_row, from_=1, to=5000, textvariable=app.buff_min_pixels_var, width=6).pack(
+        ttk.Label(tune_row, text="Match %:").pack(side="left")
+        ttk.Spinbox(tune_row, from_=40, to=90, textvariable=app.buff_match_pct_var, width=6).pack(
             side="left", padx=(4, 0)
         )
 
@@ -1605,6 +1609,96 @@ class AdvancedSettingsDialog(_ThemedDialog):
         ).pack(anchor="w", padx=10, pady=(0, 10))
 
         self._refresh_macro_preview()
+
+        # ---- Food buff (stacks with lure) ----
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", padx=10, pady=(4, 8))
+        ttk.Label(
+            parent, text="Food buff (stacks with lure)",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", padx=10)
+
+        ttk.Checkbutton(
+            parent,
+            text="Apply food buff on a timer (in addition to lure)",
+            variable=app.food_buff_enabled_var,
+        ).pack(anchor="w", padx=10, pady=(6, 4))
+
+        food_key_row = ttk.Frame(parent)
+        food_key_row.pack(fill="x", padx=10, pady=(2, 4))
+        ttk.Label(food_key_row, text="Food key:", width=22).pack(side="left")
+        ttk.Entry(food_key_row, textvariable=app.food_buff_key_var).pack(
+            side="left", fill="x", expand=True
+        )
+
+        dur_row = ttk.Frame(parent)
+        dur_row.pack(fill="x", padx=10, pady=(2, 4))
+        ttk.Label(dur_row, text="Reapply every (min):", width=22).pack(side="left")
+        ttk.Spinbox(
+            dur_row, from_=1, to=180, textvariable=app.food_buff_duration_var, width=6,
+        ).pack(side="left", padx=(4, 0))
+        ttk.Label(dur_row, text="  (buff length)", foreground=THEME_TEXT_DIM).pack(
+            side="left"
+        )
+
+        ch_row = ttk.Frame(parent)
+        ch_row.pack(fill="x", padx=10, pady=(2, 4))
+        ttk.Label(ch_row, text="Idle channel (sec):", width=22).pack(side="left")
+        ttk.Spinbox(
+            ch_row, from_=5, to=120, textvariable=app.food_buff_channel_var, width=6,
+        ).pack(side="left", padx=(4, 0))
+        ttk.Label(ch_row, text="  (must stand still; default 40)", foreground=THEME_TEXT_DIM).pack(
+            side="left"
+        )
+
+        ttk.Checkbutton(
+            parent,
+            text="Also reapply when food buff icon is missing",
+            variable=app.food_buff_reapply_missing_var,
+        ).pack(anchor="w", padx=10, pady=(4, 4))
+
+        food_cap_row = ttk.Frame(parent)
+        food_cap_row.pack(fill="x", padx=10, pady=(2, 4))
+        ttk.Button(
+            food_cap_row, text="Capture Food Buff Icon...", command=app.start_food_buff_pick,
+        ).pack(side="left")
+        ttk.Button(
+            food_cap_row, text="Test Icon Match", command=app.test_food_buff_check,
+        ).pack(side="left", padx=(6, 0))
+        food_swatch = tk.Canvas(
+            food_cap_row, width=32, height=32, bg="#333333",
+            highlightthickness=1, highlightbackground=THEME_CHROME,
+        )
+        food_swatch.pack(side="left", padx=(10, 6))
+        app.food_buff_swatch = food_swatch
+        app._paint_icon_preview(food_swatch, app.food_buff_icon_template, app.food_buff_color)
+        ttk.Label(food_cap_row, textvariable=app.food_buff_color_label_var).pack(side="left")
+
+        ttk.Label(
+            parent, textvariable=app.food_buff_status_var, foreground=THEME_STATUS_OK,
+        ).pack(anchor="w", padx=10, pady=(0, 4))
+        ttk.Label(
+            parent,
+            text="Captures a full 32×32 food icon. Match uses the whole image, not one pixel.",
+            foreground=THEME_TEXT_DIM, wraplength=390, justify="left",
+        ).pack(anchor="w", padx=10, pady=(0, 4))
+
+        food_tune = ttk.Frame(parent)
+        food_tune.pack(fill="x", padx=10, pady=(0, 6))
+        ttk.Label(food_tune, text="Match %:").pack(side="left")
+        ttk.Spinbox(
+            food_tune, from_=40, to=90, textvariable=app.food_buff_match_pct_var, width=6,
+        ).pack(side="left", padx=(4, 0))
+
+        ttk.Label(
+            parent,
+            text=(
+                "Bind your food (or a /use Food macro) to the Food key. "
+                "The timer reapplies on schedule; optional icon check also "
+                "reapplies if the buff falls off early. Lure and food are "
+                "independent and can both be active."
+            ),
+            foreground=THEME_TEXT_DIM, wraplength=390, justify="left",
+        ).pack(anchor="w", padx=10, pady=(0, 10))
 
     def _refresh_macro_preview(self):
         app = self.app
@@ -1666,7 +1760,7 @@ class AdvancedSettingsDialog(_ThemedDialog):
 
 
 class LuresDialog(_ThemedDialog):
-    """Standalone lure/buff configuration window."""
+    """Standalone lure/buff configuration window (scrollable so nothing is clipped)."""
 
     # Reuse the established lure controls while keeping Lures independent
     # from the Advanced Settings notebook.
@@ -1676,11 +1770,54 @@ class LuresDialog(_ThemedDialog):
 
     def __init__(self, master, app: "FishingBotApp"):
         super().__init__(master, app, "Lures")
-        self.geometry("440x560")
-        self._build_lures_content(self)
-        ttk.Button(self, text="Close", command=self.destroy).pack(
-            anchor="e", padx=10, pady=(2, 10)
+        # Fit common laptop heights; content scrolls inside.
+        self.geometry("460x640")
+        self.minsize(400, 420)
+        self.resizable(True, True)
+
+        # Fixed close bar at bottom
+        bottom = ttk.Frame(self)
+        bottom.pack(side="bottom", fill="x", padx=10, pady=(4, 10))
+        ttk.Button(bottom, text="Close", command=self.destroy).pack(side="right")
+
+        # Scrollable body
+        body = ttk.Frame(self)
+        body.pack(side="top", fill="both", expand=True)
+
+        canvas = tk.Canvas(body, bg=THEME_PANEL_BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+
+        inner.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
         )
+        window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_canvas_configure(event):
+            canvas.itemconfigure(window_id, width=event.width)
+
+        canvas.bind("<Configure>", _on_canvas_configure)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Mouse-wheel scrolling (Windows)
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def _bind_wheel(_event=None):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        def _unbind_wheel(_event=None):
+            canvas.unbind_all("<MouseWheel>")
+
+        canvas.bind("<Enter>", _bind_wheel)
+        canvas.bind("<Leave>", _unbind_wheel)
+        self.bind("<Destroy>", lambda e: _unbind_wheel())
+
+        self._build_lures_content(inner)
 
 
 class FishingBotApp(tk.Tk):
@@ -1708,6 +1845,10 @@ class FishingBotApp(tk.Tk):
         self.search_region: tuple[int, int, int, int] | None = None
         self.buff_color: tuple[int, int, int] | None = None
         self.buff_region: tuple[int, int, int, int] | None = None
+        self.buff_icon_template = None  # list HxWx3
+        self.food_buff_color: tuple[int, int, int] | None = None
+        self.food_buff_region: tuple[int, int, int, int] | None = None
+        self.food_buff_icon_template = None
         self._registered_hotkey: str | None = None
         self._timer_after_id: str | None = None
         self._timer_end_time: float | None = None
@@ -1964,33 +2105,81 @@ class FishingBotApp(tk.Tk):
         else:
             self._sample_buff_at_cursor()
 
+    def _capture_icon_at_cursor(self, size: int = 32):
+        """Grab a full icon patch + dominant color around the cursor."""
+        x, y = pyautogui.position()
+        half = size // 2
+        image = pyautogui.screenshot(region=(x - half, y - half, size, size)).convert("RGB")
+        pixels = list(image.getdata())
+        w, h = image.size
+        template = []
+        for row_i in range(h):
+            row = []
+            for col_i in range(w):
+                row.append(list(pixels[row_i * w + col_i]))
+            template.append(row)
+        vivid = [pixel for pixel in pixels
+                 if max(pixel) >= 90 and max(pixel) - min(pixel) >= 40]
+        if vivid:
+            r, g, b = Counter(vivid).most_common(1)[0][0]
+        else:
+            r, g, b = pixels[len(pixels) // 2]
+        margin = max(32, half + 8)
+        region = (x - margin, y - margin, x + margin, y + margin)
+        return (r, g, b), template, region, (x, y)
+
     def _sample_buff_at_cursor(self):
         try:
-            x, y = pyautogui.position()
-            # Use the most common vivid color near the cursor instead of one
-            # possibly-black pixel. This makes the small purple/green pole-buff
-            # icon much more reliable to identify.
-            image = pyautogui.screenshot(region=(x - 14, y - 14, 28, 28)).convert("RGB")
-            vivid = [pixel for pixel in image.getdata()
-                     if max(pixel) >= 90 and max(pixel) - min(pixel) >= 55]
-            if vivid:
-                r, g, b = Counter(vivid).most_common(1)[0][0]
-            else:
-                r, g, b = pyautogui.pixel(x, y)
+            (r, g, b), template, region, (x, y) = self._capture_icon_at_cursor(32)
         except Exception as e:
-            messagebox.showerror(APP_TITLE, f"Could not sample color:\n{e}")
+            messagebox.showerror(APP_TITLE, f"Could not capture buff icon:\n{e}")
             self.buff_status_var.set("")
             return
 
         self.buff_color = (r, g, b)
-        # The icon and its green remaining-time text together fit within this
-        # stable local region, while excluding the rest of the UI.
-        margin = 32
-        self.buff_region = (x - margin, y - margin, x + margin, y + margin)
+        self.buff_icon_template = template
+        self.buff_region = region
         if hasattr(self, "buff_swatch"):
             self.buff_swatch.config(bg=f"#{r:02x}{g:02x}{b:02x}")
-        self.buff_color_label_var.set(f"Pole buff RGB({r}, {g}, {b}) at ({x}, {y})")
-        self.buff_status_var.set("Pole buff captured. Test it while the green timer is visible.")
+        self.buff_color_label_var.set(
+            f"FULL ICON {len(template)}×{len(template[0])} captured at ({x}, {y})"
+        )
+        self._paint_icon_preview(getattr(self, "buff_swatch", None), template, (r, g, b))
+        self.buff_status_var.set("Full pole-buff ICON saved (not single pixel). Test with buff on/off.")
+        self._save_settings()
+
+    def start_food_buff_pick(self):
+        self._food_buff_pick_countdown(3)
+
+    def _food_buff_pick_countdown(self, seconds_left: int):
+        if seconds_left > 0:
+            self.food_buff_status_var.set(
+                f"Hover over the food buff icon on your character... sampling in {seconds_left}"
+            )
+            self.after(1000, lambda: self._food_buff_pick_countdown(seconds_left - 1))
+        else:
+            self._sample_food_buff_at_cursor()
+
+    def _sample_food_buff_at_cursor(self):
+        try:
+            (r, g, b), template, region, (x, y) = self._capture_icon_at_cursor(32)
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, f"Could not capture food icon:\n{e}")
+            self.food_buff_status_var.set("")
+            return
+
+        self.food_buff_color = (r, g, b)
+        self.food_buff_icon_template = template
+        self.food_buff_region = region
+        if hasattr(self, "food_buff_swatch"):
+            self.food_buff_swatch.config(bg=f"#{r:02x}{g:02x}{b:02x}")
+        self.food_buff_color_label_var.set(
+            f"FULL ICON {len(template)}×{len(template[0])} captured at ({x}, {y})"
+        )
+        self._paint_icon_preview(getattr(self, "food_buff_swatch", None), template, (r, g, b))
+        self.food_buff_status_var.set(
+            "Full food-buff ICON saved (not single pixel). Test with buff on/off."
+        )
         self._save_settings()
 
     def browse_chat_log(self):
@@ -2121,33 +2310,114 @@ class FishingBotApp(tk.Tk):
 
         return results
 
+    def test_food_buff_check(self):
+        if self.food_buff_icon_template is None and self.food_buff_color is None:
+            messagebox.showerror(APP_TITLE, "Capture a food buff icon first.")
+            return
+        self.food_buff_status_var.set("Scanning for food buff icon (full template)...")
+        self.update_idletasks()
+        found = False
+        try:
+            if self.food_buff_icon_template:
+                found = match_icon_template(self.food_buff_icon_template, threshold=max(0.4, min(0.9, self.food_buff_match_pct_var.get()/100.0)), step=3, pixel_tol=35)
+            if not found and self.food_buff_color is not None and not self.food_buff_icon_template:
+                import pyautogui as _pag
+                sw, sh = _pag.size()
+                result = scan_for_color(
+                    self.food_buff_color,
+                    min(int(self.food_buff_tolerance_var.get()), 28),
+                    max(int(self.food_buff_min_pixels_var.get()), 12),
+                    (0, 0, sw, max(100, int(sh * 0.18))),
+                )
+                found = result is not None
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, f"Scan failed:\n{e}")
+            self.food_buff_status_var.set("")
+            return
+        if not found:
+            self.food_buff_status_var.set(
+                "Food buff NOT detected — the bot would reapply food now."
+            )
+        else:
+            self.food_buff_status_var.set("Food buff icon matched on screen.")
+
     def test_buff_check(self):
-        if self.buff_color is None:
-            messagebox.showerror(APP_TITLE, "Pick the buff icon first.")
+        if self.buff_icon_template is None and self.buff_color is None:
+            messagebox.showerror(APP_TITLE, "Capture the pole buff icon first.")
             return
 
-        self.buff_status_var.set("Scanning for buff icon...")
+        self.buff_status_var.set("Scanning for pole buff icon (full template)...")
         self.update_idletasks()
 
+        found = False
         try:
-            result = scan_for_color(
-                self.buff_color,
-                int(self.buff_tolerance_var.get()),
-                int(self.buff_min_pixels_var.get()),
-                self.buff_region,
-            )
+            if self.buff_icon_template:
+                found = match_icon_template(self.buff_icon_template, threshold=max(0.4, min(0.9, self.buff_match_pct_var.get()/100.0)), step=3, pixel_tol=35)
+            if not found and self.buff_color is not None and not self.buff_icon_template:
+                import pyautogui as _pag
+                sw, sh = _pag.size()
+                result = scan_for_color(
+                    self.buff_color,
+                    min(int(self.buff_tolerance_var.get()), 28),
+                    max(int(self.buff_min_pixels_var.get()), 12),
+                    (0, 0, sw, max(100, int(sh * 0.18))),
+                )
+                found = result is not None
         except Exception as e:
             messagebox.showerror(APP_TITLE, f"Scan failed:\n{e}")
             self.buff_status_var.set("")
             return
 
-        if result is None:
-            self.buff_status_var.set("Buff NOT detected \u2014 the bot would use the lure now.")
+        if not found:
+            self.buff_status_var.set("Buff NOT detected — the bot would use the lure now.")
         else:
-            x, y, count = result
-            self.buff_status_var.set(f"Buff detected at ({x}, {y}) \u2014 {count} pixels.")
+            self.buff_status_var.set("Pole buff icon matched on screen.")
 
-    # ---------- lazily-created state (persist regardless of which dialog is open) ----------
+    # ---------- lazily-created state ----------
+
+
+    def _paint_icon_preview(self, canvas, template, fallback_color=None):
+        """Draw the captured icon onto a small canvas, or a solid color fallback."""
+        if canvas is None:
+            return
+        try:
+            canvas.delete("all")
+            w = int(canvas["width"])
+            h = int(canvas["height"])
+            if template and len(template) >= 4:
+                th = len(template)
+                tw = len(template[0])
+                for y in range(h):
+                    sy = min(th - 1, int(y * th / h))
+                    for x in range(w):
+                        sx = min(tw - 1, int(x * tw / w))
+                        r, g, b = template[sy][sx][:3]
+                        canvas.create_line(x, y, x + 1, y + 1, fill=f"#{int(r):02x}{int(g):02x}{int(b):02x}")
+            elif fallback_color:
+                r, g, b = fallback_color
+                canvas.config(bg=f"#{r:02x}{g:02x}{b:02x}")
+            else:
+                canvas.config(bg="#333333")
+        except Exception:
+            pass
+
+    @property
+    def buff_duration_var(self):
+        if not hasattr(self, "_buff_duration_var"):
+            self._buff_duration_var = tk.DoubleVar(value=10.0)
+        return self._buff_duration_var
+
+    @property
+    def buff_match_pct_var(self):
+        if not hasattr(self, "_buff_match_pct_var"):
+            self._buff_match_pct_var = tk.IntVar(value=55)
+        return self._buff_match_pct_var
+
+    @property
+    def food_buff_match_pct_var(self):
+        if not hasattr(self, "_food_buff_match_pct_var"):
+            self._food_buff_match_pct_var = tk.IntVar(value=55)
+        return self._food_buff_match_pct_var
 
     @property
     def fish_key_var(self):
@@ -2318,6 +2588,60 @@ class FishingBotApp(tk.Tk):
             self._buff_status_var = tk.StringVar(value="")
         return self._buff_status_var
 
+    @property
+    def food_buff_enabled_var(self):
+        if not hasattr(self, "_food_buff_enabled_var"):
+            self._food_buff_enabled_var = tk.BooleanVar(value=False)
+        return self._food_buff_enabled_var
+
+    @property
+    def food_buff_key_var(self):
+        if not hasattr(self, "_food_buff_key_var"):
+            self._food_buff_key_var = tk.StringVar(value="")
+        return self._food_buff_key_var
+
+    @property
+    def food_buff_duration_var(self):
+        if not hasattr(self, "_food_buff_duration_var"):
+            self._food_buff_duration_var = tk.DoubleVar(value=30.0)
+        return self._food_buff_duration_var
+
+    @property
+    def food_buff_channel_var(self):
+        if not hasattr(self, "_food_buff_channel_var"):
+            self._food_buff_channel_var = tk.DoubleVar(value=40.0)
+        return self._food_buff_channel_var
+
+    @property
+    def food_buff_reapply_missing_var(self):
+        if not hasattr(self, "_food_buff_reapply_missing_var"):
+            self._food_buff_reapply_missing_var = tk.BooleanVar(value=True)
+        return self._food_buff_reapply_missing_var
+
+    @property
+    def food_buff_tolerance_var(self):
+        if not hasattr(self, "_food_buff_tolerance_var"):
+            self._food_buff_tolerance_var = tk.IntVar(value=30)
+        return self._food_buff_tolerance_var
+
+    @property
+    def food_buff_min_pixels_var(self):
+        if not hasattr(self, "_food_buff_min_pixels_var"):
+            self._food_buff_min_pixels_var = tk.IntVar(value=5)
+        return self._food_buff_min_pixels_var
+
+    @property
+    def food_buff_color_label_var(self):
+        if not hasattr(self, "_food_buff_color_label_var"):
+            self._food_buff_color_label_var = tk.StringVar(value="No food buff icon picked yet")
+        return self._food_buff_color_label_var
+
+    @property
+    def food_buff_status_var(self):
+        if not hasattr(self, "_food_buff_status_var"):
+            self._food_buff_status_var = tk.StringVar(value="")
+        return self._food_buff_status_var
+
     # ---------- bot control ----------
 
     def _build_config(self) -> BotConfig:
@@ -2356,6 +2680,20 @@ class FishingBotApp(tk.Tk):
             hearth_key=self.hearth_key_var.get().strip() or "1",
             chat_log_enabled=bool(self.chat_log_enabled_var.get()),
             chat_log_path=self.chat_log_path_var.get().strip(),
+            food_buff_enabled=bool(self.food_buff_enabled_var.get()),
+            food_buff_key=self.food_buff_key_var.get().strip(),
+            food_buff_duration_minutes=float(self.food_buff_duration_var.get()),
+            food_buff_reapply_when_missing=bool(self.food_buff_reapply_missing_var.get()),
+            food_buff_color=self.food_buff_color,
+            food_buff_region=self.food_buff_region,
+            food_buff_icon_template=self.food_buff_icon_template,
+            food_buff_match_threshold=max(0.4, min(0.9, self.food_buff_match_pct_var.get() / 100.0)),
+            food_buff_tolerance=int(self.food_buff_tolerance_var.get()),
+            food_buff_min_pixels=int(self.food_buff_min_pixels_var.get()),
+            food_buff_channel_seconds=float(self.food_buff_channel_var.get()),
+            buff_icon_template=self.buff_icon_template,
+            buff_match_threshold=max(0.4, min(0.9, self.buff_match_pct_var.get() / 100.0)),
+            buff_duration_minutes=float(self.buff_duration_var.get()),
         )
 
     def _toggle_bot(self):
@@ -2487,8 +2825,11 @@ class FishingBotApp(tk.Tk):
     def _update_stats_loop(self):
         if self.bot:
             self.stats_label.config(
-                text=f"Casts: {self.bot.casts}    Catches: {self.bot.catches}    "
-                     f"Buffs applied: {self.bot.buffs_applied}"
+                text=(
+                    f"Casts: {self.bot.casts}    Catches: {self.bot.catches}    "
+                    f"Lures: {self.bot.buffs_applied}    "
+                    f"Food: {getattr(self.bot, 'food_buffs_applied', 0)}"
+                )
             )
             if self.bot.is_running():
                 self.after(500, self._update_stats_loop)
@@ -2535,6 +2876,20 @@ class FishingBotApp(tk.Tk):
             "hearth_before_close": bool(self.hearth_before_close_var.get()),
             "chat_log_enabled": bool(self.chat_log_enabled_var.get()),
             "chat_log_path": self.chat_log_path_var.get(),
+            "food_buff_enabled": bool(self.food_buff_enabled_var.get()),
+            "food_buff_key": self.food_buff_key_var.get(),
+            "food_buff_duration": float(self.food_buff_duration_var.get()),
+            "food_buff_reapply_missing": bool(self.food_buff_reapply_missing_var.get()),
+            "food_buff_color": list(self.food_buff_color) if self.food_buff_color else None,
+            "food_buff_region": list(self.food_buff_region) if self.food_buff_region else None,
+            "food_buff_icon_template": self.food_buff_icon_template,
+            "food_buff_tolerance": int(self.food_buff_tolerance_var.get()),
+            "food_buff_min_pixels": int(self.food_buff_min_pixels_var.get()),
+            "food_buff_channel": float(self.food_buff_channel_var.get()),
+            "buff_icon_template": self.buff_icon_template,
+            "buff_duration": float(self.buff_duration_var.get()),
+            "buff_match_pct": int(self.buff_match_pct_var.get()),
+            "food_buff_match_pct": int(self.food_buff_match_pct_var.get()),
         }
 
     def _save_settings(self):
@@ -2605,6 +2960,23 @@ class FishingBotApp(tk.Tk):
         if buff_region:
             self.buff_region = tuple(buff_region)
 
+        food_color = data.get("food_buff_color")
+        if food_color:
+            self.food_buff_color = tuple(food_color)
+            r, g, b = self.food_buff_color
+            self.food_buff_color_label_var.set(f"RGB({r}, {g}, {b})")
+        food_region = data.get("food_buff_region")
+        if food_region:
+            self.food_buff_region = tuple(food_region)
+        if data.get("food_buff_icon_template"):
+            self.food_buff_icon_template = data["food_buff_icon_template"]
+            t = self.food_buff_icon_template
+            self.food_buff_color_label_var.set(f"FULL ICON {len(t)}×{len(t[0])} loaded")
+        if data.get("buff_icon_template"):
+            self.buff_icon_template = data["buff_icon_template"]
+            t = self.buff_icon_template
+            self.buff_color_label_var.set(f"FULL ICON {len(t)}×{len(t[0])} loaded")
+
         for key, var_name in (
             ("warmup", "warmup_var"), ("timeout", "timeout_var"),
             ("tune_px", "tune_px_var"), ("dip_threshold", "dip_threshold_var"),
@@ -2613,9 +2985,24 @@ class FishingBotApp(tk.Tk):
             ("buff_min_pixels", "buff_min_pixels_var"), ("bite_click_delay", "bite_click_delay_var"),
             ("recast_delay", "recast_delay_var"), ("fishing_pole", "fishing_pole_var"),
             ("lure_item", "lure_item_var"),
+            ("food_buff_enabled", "food_buff_enabled_var"),
+            ("food_buff_key", "food_buff_key_var"),
+            ("food_buff_duration", "food_buff_duration_var"),
+            ("food_buff_channel", "food_buff_channel_var"),
+            ("food_buff_reapply_missing", "food_buff_reapply_missing_var"),
+            ("food_buff_tolerance", "food_buff_tolerance_var"),
+            ("food_buff_min_pixels", "food_buff_min_pixels_var"),
         ):
             if key in data:
                 getattr(self, var_name).set(data[key])
+
+
+        if "buff_duration" in data:
+            self.buff_duration_var.set(data["buff_duration"])
+        if "buff_match_pct" in data:
+            self.buff_match_pct_var.set(data["buff_match_pct"])
+        if "food_buff_match_pct" in data:
+            self.food_buff_match_pct_var.set(data["food_buff_match_pct"])
 
         if "timer_enabled" in data:
             self.timer_enabled_var.set(data["timer_enabled"])

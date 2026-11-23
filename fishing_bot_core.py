@@ -83,17 +83,34 @@ class BotConfig:
     prefer_high_saturation: bool = True # weight centroid toward higher-saturation pixels
     min_cluster_density: float = 0.0    # 0 = off; e.g. 0.15 requires matched pixels to fill ≥15% of their bounding box
 
-    # ---- bobber/lure buff check ----
+    # ---- bobber/lure buff check (pole lure) ----
     buff_check_enabled: bool = False
     buff_color: Optional[Color] = None
-    buff_region: Optional[Tuple[int, int, int, int]] = None  # small box around the buff icon
+    buff_region: Optional[Tuple[int, int, int, int]] = None  # capture hint only
+    buff_icon_template: Optional[list] = None  # full HxWx3 icon (preferred over 1 pixel)
     buff_tolerance: int = 30
     buff_min_pixels: int = 5
+    buff_match_threshold: float = 0.55  # fraction of icon pixels that must match
     buff_key: str = ""           # key/macro that uses the bobber/lure on your fishing pole
     buff_apply_wait_seconds: float = 0.5  # wait, then verify the pole-buff icon after applying
+    buff_duration_minutes: float = 10.0  # do not re-apply lure until this elapses
     fishing_pole_name: str = ""  # equipped fishing pole, used only to build the suggested macro text
     lure_item_name: str = ""     # lure/buff item name, used only to build the suggested macro text
     hearth_key: str = "1"        # key bound to Hearthstone in WoW
+
+    # ---- food buff (stacks with lure; separate hotkey + timer) ----
+    food_buff_enabled: bool = False
+    food_buff_key: str = ""                    # key bound to food / food macro
+    food_buff_duration_minutes: float = 30.0   # reapply on this timer (buff length)
+    food_buff_channel_seconds: float = 40.0    # must stay idle this long for food to apply
+    food_buff_reapply_when_missing: bool = True  # also reapply if icon missing
+    food_buff_color: Optional[Color] = None
+    food_buff_region: Optional[Tuple[int, int, int, int]] = None  # capture hint only
+    food_buff_icon_template: Optional[list] = None  # full HxWx3 icon
+    food_buff_tolerance: int = 30
+    food_buff_min_pixels: int = 5
+    food_buff_match_threshold: float = 0.55
+    food_buff_apply_wait_seconds: float = 0.6
 
     # Accurate catch counting via WoW chat log (enable with /chatlog in-game).
     # When enabled, only count if the log shows loot — not "got away".
@@ -267,6 +284,57 @@ def scan_for_color(
     return centroid_x, centroid_y, len(xs)
 
 
+
+def match_icon_template(
+    template: list,
+    threshold: float = 0.55,
+    search_region: Optional[Tuple[int, int, int, int]] = None,
+    step: int = 3,
+    pixel_tol: int = 35,
+) -> bool:
+    """Search for a full buff-icon template (HxWx3 RGB list).
+
+    `threshold` is the minimum fraction of pixels that must match within
+    `pixel_tol` per channel (0..1). Higher = stricter. Default 0.55 means
+    at least 55% of the icon pixels must line up — avoids one-pixel /
+    muddy false positives.
+    """
+    try:
+        tmpl = np.asarray(template, dtype=np.int16)
+    except Exception:
+        return False
+    if tmpl.ndim != 3 or tmpl.shape[2] != 3 or tmpl.shape[0] < 6 or tmpl.shape[1] < 6:
+        return False
+    th, tw = tmpl.shape[:2]
+
+    if search_region is None:
+        try:
+            sw, sh = pyautogui.size()
+            # Player buff row is near the top; keep the band tight to cut false hits.
+            search_region = (0, 0, sw, max(120, int(sh * 0.20)))
+        except Exception:
+            search_region = None
+
+    img = ImageGrab.grab(bbox=search_region)
+    screen = np.asarray(img.convert("RGB"), dtype=np.int16)
+    sh, sw = screen.shape[:2]
+    if sh < th or sw < tw:
+        return False
+
+    best = 0.0
+    for y in range(0, sh - th + 1, step):
+        row = screen[y:y + th]
+        for x in range(0, sw - tw + 1, step):
+            patch = row[:, x:x + tw]
+            # Pixel is a match if every RGB channel is within pixel_tol
+            close = np.all(np.abs(patch - tmpl) <= pixel_tol, axis=2)
+            score = float(close.mean())
+            if score > best:
+                best = score
+                if best >= threshold:
+                    return True
+    return best >= threshold
+
 class FishingBot:
     def __init__(self, config: BotConfig, log_fn: Optional[LogFn] = None):
         self.config = config
@@ -276,6 +344,9 @@ class FishingBot:
         self.casts = 0
         self.catches = 0
         self.buffs_applied = 0
+        self.food_buffs_applied = 0
+        self._last_food_buff_time: float = 0.0
+        self._last_lure_buff_time: float = 0.0
         self._hearth_lock = threading.Lock()
         self._hearth_sent = False
 
@@ -439,52 +510,203 @@ class FishingBot:
             self._log(f"Tracking scan error: {e}")
             return None
 
-    # ---------- buff check ----------
+    # ---------- buff icon detection (full icon, not one pixel) ----------
+
+    def _idle_wait(self, seconds: float, label: str = "idle") -> bool:
+        """Stay still for `seconds`. Returns False if stop was requested."""
+        if seconds <= 0:
+            return not self._stop_event.is_set()
+        self._log(f"Staying idle {seconds:.0f}s ({label})...")
+        end = time.time() + seconds
+        while time.time() < end:
+            if self._stop_event.is_set():
+                return False
+            if not self._is_wow_foreground():
+                if not self._wait_while_paused_for_focus():
+                    return False
+            time.sleep(0.25)
+        return True
+
+    def _icon_present(self, template, threshold: float, color_fallback, tol, min_px, hint_region) -> bool:
+        """Return True only when the buff icon is actually found.
+
+        If a full icon template was captured, ONLY that is used (strict).
+        Color fallback is limited to a small top band and needs more pixels.
+        Missing icon => False so the bot will reapply.
+        """
+        # Full icon template path (preferred and strict)
+        if template:
+            try:
+                # threshold here is match fraction (0.55+); config may still store
+                # old mean-error values — clamp into a sensible fraction range.
+                frac = threshold if 0.2 <= threshold <= 0.95 else 0.55
+                return match_icon_template(
+                    template, threshold=frac, step=3, pixel_tol=max(25, min(tol, 45)),
+                )
+            except Exception as e:
+                self._log(f"Icon template scan error: {e}")
+                return False
+
+        # No template captured: optional color fallback (stricter than before)
+        if color_fallback is None:
+            # Nothing to look for — treat as present so we don't spam keys.
+            return True
+        regions = []
+        if hint_region is not None:
+            l, t, r, b = hint_region
+            regions.append((l - 40, t - 40, r + 40, b + 40))
+        try:
+            sw, sh = pyautogui.size()
+            regions.append((0, 0, sw, max(100, int(sh * 0.18))))
+        except Exception:
+            pass
+        need = max(min_px, 12)
+        for reg in regions:
+            try:
+                if scan_for_color(color_fallback, min(tol, 28), need, region=reg) is not None:
+                    return True
+            except Exception:
+                continue
+        return False
 
     def _has_buff(self) -> bool:
-        """Return True if the configured buff icon color is currently
-        present in the configured region. If buff checking isn't
-        configured/enabled, treat this as always satisfied so the loop
-        behaves exactly as before."""
-        if not self.config.buff_check_enabled or self.config.buff_color is None:
+        if not self.config.buff_check_enabled:
+            return True
+        if self.config.buff_icon_template is None and self.config.buff_color is None:
             return True
         try:
-            result = scan_for_color(
+            return self._icon_present(
+                self.config.buff_icon_template,
+                self.config.buff_match_threshold,
                 self.config.buff_color,
                 self.config.buff_tolerance,
                 self.config.buff_min_pixels,
                 self.config.buff_region,
             )
-            return result is not None
         except Exception as e:
             self._log(f"Buff scan error: {e}")
-            # Fail safe: assume buffed so we don't spam-press the buff key
-            # on a broken scan.
             return True
 
-    def _apply_buff(self):
+    def _apply_buff(self) -> bool:
         if not self.config.buff_key:
             self._log("Buff missing but no buff key configured — skipping.")
             return False
         pydirectinput.press(self.config.buff_key)
         self.buffs_applied += 1
-        self._log(f"Bobber buff not detected — used lure on fishing pole (#{self.buffs_applied}).")
+        self._last_lure_buff_time = time.time()
+        self._log(f"Applied lure to fishing pole (#{self.buffs_applied}).")
         return True
 
     def _ensure_buff(self):
+        """Apply pole lure AFTER food. Never reapply while icon is up or timer is live."""
         if not self.config.buff_check_enabled:
             return
-        if self._has_buff():
+        if not (self.config.buff_key or "").strip():
             return
+
+        has_icon_cfg = (
+            self.config.buff_icon_template is not None or self.config.buff_color is not None
+        )
+        # Prefer live icon: if lure is already on the character, do not spend another lure.
+        if has_icon_cfg and self._has_buff():
+            self._last_lure_buff_time = time.time()
+            return
+
+        duration_s = max(60.0, float(getattr(self.config, "buff_duration_minutes", 10.0)) * 60.0)
+        if self._last_lure_buff_time > 0 and (time.time() - self._last_lure_buff_time) < duration_s:
+            return  # timer says lure should still be active
+
         if not self._apply_buff():
             return
-        # Let WoW update the small pole-buff icon, then verify it before the
-        # next pass. This prevents a second lure press while the icon appears.
         time.sleep(self.config.buff_apply_wait_seconds)
-        if self._has_buff():
-            self._log("Lure buff confirmed after 0.5 seconds.")
+        if has_icon_cfg and self._has_buff():
+            self._log("Lure buff confirmed (icon match).")
         else:
-            self._log("Lure buff is not visible yet; continuing without a second use.")
+            self._log("Lure applied (timer armed so it will not spam).")
+
+    def _has_food_buff(self) -> bool:
+        if self.config.food_buff_icon_template is None and self.config.food_buff_color is None:
+            return True
+        try:
+            return self._icon_present(
+                self.config.food_buff_icon_template,
+                self.config.food_buff_match_threshold,
+                self.config.food_buff_color,
+                self.config.food_buff_tolerance,
+                self.config.food_buff_min_pixels,
+                self.config.food_buff_region,
+            )
+        except Exception as e:
+            self._log(f"Food buff scan error: {e}")
+            return True
+
+    def _apply_food_buff(self) -> bool:
+        key = (self.config.food_buff_key or "").strip()
+        if not key:
+            self._log("Food buff needed but no food key configured — skipping.")
+            return False
+        pydirectinput.press(key)
+        self.food_buffs_applied += 1
+        self._log(f"Started food (#{self.food_buffs_applied}) via '{key}' — stay idle for channel.")
+        channel = max(0.0, float(self.config.food_buff_channel_seconds))
+        if not self._idle_wait(channel, "food channel — do not move or cast"):
+            return False
+        self._last_food_buff_time = time.time()
+        return True
+
+    def _ensure_food_buff(self):
+        """Food first (before lure).
+
+        When a food icon was captured: ONLY reapply if the icon is missing.
+        The duration timer is NOT used in that mode (it was causing early
+        re-eats while the buff was still up).
+
+        When no icon was captured: fall back to the duration timer only.
+        """
+        if not self.config.food_buff_enabled:
+            return
+        if not (self.config.food_buff_key or "").strip():
+            return
+
+        has_icon_cfg = (
+            self.config.food_buff_icon_template is not None
+            or self.config.food_buff_color is not None
+        )
+
+        if has_icon_cfg:
+            if self._has_food_buff():
+                # Buff is on the character — never re-eat.
+                self._last_food_buff_time = time.time()
+                return
+            # Icon missing. Optional: honor "reapply when missing" checkbox.
+            if not self.config.food_buff_reapply_when_missing and self._last_food_buff_time > 0:
+                # User turned missing-check off; only eat again after duration.
+                duration_s = max(60.0, float(self.config.food_buff_duration_minutes) * 60.0)
+                if (time.time() - self._last_food_buff_time) < duration_s:
+                    return
+            self._log("Food buff icon missing — applying food.")
+        else:
+            # No icon capture: timer-only fallback
+            duration_s = max(60.0, float(self.config.food_buff_duration_minutes) * 60.0)
+            if self._last_food_buff_time > 0 and (time.time() - self._last_food_buff_time) < duration_s:
+                return
+            self._log(
+                "Food buff timer due (no icon capture — capture the food icon "
+                "for more reliable checks)."
+            )
+
+        if not self._apply_food_buff():
+            return
+        time.sleep(self.config.food_buff_apply_wait_seconds)
+        if has_icon_cfg:
+            if self._has_food_buff():
+                self._log("Food buff icon confirmed.")
+            else:
+                self._log(
+                    "Food channel done; icon not seen yet. "
+                    "If this keeps happening, re-capture the food icon while it is active."
+                )
+
 
     def _cast_line(self):
         pydirectinput.press(self.config.fishing_button)
@@ -831,6 +1053,11 @@ class FishingBot:
             if not self._wait_while_paused_for_focus():
                 break
 
+            # Order: food first (long idle channel), then pole lure.
+            self._ensure_food_buff()
+            if self._stop_event.is_set():
+                break
+
             self._ensure_buff()
             if self._stop_event.is_set():
                 break
@@ -864,5 +1091,6 @@ class FishingBot:
 
         self._log(
             f"Bot stopped. Casts: {self.casts}, Catches: {self.catches}, "
-            f"Buffs applied: {self.buffs_applied}."
+            f"Lures applied: {self.buffs_applied}, "
+            f"Food buffs applied: {self.food_buffs_applied}."
         )
