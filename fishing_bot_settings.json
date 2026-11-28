@@ -1,0 +1,110 @@
+{
+  "fish_key": "3",
+  "buff_key": "2",
+  "hearth_key": "1",
+  "stop_hotkey": "f8",
+  "picked_color": [
+    92,
+    41,
+    36
+  ],
+  "extra_colors": [],
+  "zone_profiles": {
+    "gaget": {
+      "name": "gaget",
+      "coords": "68.4,17.7",
+      "picked_color": [
+        92,
+        41,
+        36
+      ],
+      "tolerance": 30,
+      "min_pixels": 12,
+      "match_shades": false,
+      "hue_tolerance": 15,
+      "search_region": [
+        861,
+        190,
+        1521,
+        591
+      ],
+      "tracking_margin": 60,
+      "dip_threshold": 6
+    },
+    "WPL": {
+      "name": "WPL",
+      "coords": "57.787.2",
+      "picked_color": [
+        130,
+        57,
+        37
+      ],
+      "tolerance": 30,
+      "min_pixels": 12,
+      "match_shades": false,
+      "hue_tolerance": 15,
+      "search_region": [
+        860,
+        185,
+        1521,
+        557
+      ],
+      "tracking_margin": 60,
+      "dip_threshold": 6
+    }
+  },
+  "search_region": [
+    861,
+    190,
+    1521,
+    591
+  ],
+  "tolerance": 30,
+  "min_pixels": 12,
+  "match_shades": false,
+  "hue_tolerance": 15,
+  "buff_color": [
+    166,
+    137,
+    15
+  ],
+  "buff_region": [
+    1671,
+    17,
+    1735,
+    81
+  ],
+  "warmup": 2.0,
+  "timeout": 30.0,
+  "tune_px": 0,
+  "dip_threshold": 6,
+  "tracking_margin": 60,
+  "human_like": true,
+  "buff_enabled": false,
+  "buff_tolerance": 30,
+  "buff_min_pixels": 5,
+  "bite_click_delay": 0.0,
+  "recast_delay": 1.0,
+  "fishing_pole": "",
+  "lure_item": "Shiny Bauble",
+  "timer_enabled": true,
+  "timer_minutes": 240,
+  "close_wow": true,
+  "hearth_before_close": true,
+  "chat_log_enabled": false,
+  "chat_log_path": "",
+  "food_buff_enabled": false,
+  "food_buff_key": "",
+  "food_buff_duration": 30.0,
+  "food_buff_reapply_missing": true,
+  "food_buff_color": null,
+  "food_buff_region": null,
+  "food_buff_icon_template": null,
+  "food_buff_tolerance": 30,
+  "food_buff_min_pixels": 5,
+  "food_buff_channel": 40.0,
+  "buff_icon_template": null,
+  "buff_duration": 10.0,
+  "buff_match_pct": 55,
+  "food_buff_match_pct": 55
+}
